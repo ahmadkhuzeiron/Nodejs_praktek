@@ -1,51 +1,35 @@
 const express = require('express');
 const session = require('express-session');
+const flash = require('connect-flash');
 const passport = require('passport');
 const LocalStrategy = require('passport-local').Strategy;
-const flash = require('connect-flash');
-const User = require('./models/user');
-const sequelize = require('./database/connection');
+const bcrypt = require('bcrypt');
+const { Sequelize, DataTypes } = require('sequelize');
 
+// Inisialisasi aplikasi Express
 const app = express();
 
-// Middleware
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
-// Konfigurasi session
-app.use(
-  session({
-    secret: 'your_session_secret',
-    resave: false,
-    saveUninitialized: false
-  })
-);
-
 // Konfigurasi Passport.js
-app.use(passport.initialize());
-app.use(passport.session());
-app.use(flash());
-
 passport.use(
-  new LocalStrategy(
-    async (username, password, done) => {
-      try {
-        const user = await User.findOne({ where: { username } });
+  new LocalStrategy(async (username, password, done) => {
+    try {
+      const user = await User.findOne({ where: { username } });
 
-        if (!user) {
-          return done(null, false, { message: 'Incorrect username.' });
-        }
-
-        if (user.password !== password) {
-          return done(null, false, { message: 'Incorrect password.' });
-        }
-
-        return done(null, user);
-      } catch (error) {
-        return done(error);
+      if (!user) {
+        return done(null, false, { message: 'Incorrect username.' });
       }
+
+      const passwordMatch = await bcrypt.compare(password, user.password);
+
+      if (!passwordMatch) {
+        return done(null, false, { message: 'Incorrect password.' });
+      }
+
+      return done(null, user);
+    } catch (error) {
+      return done(error);
     }
-  )
+  })
 );
 
 passport.serializeUser((user, done) => {
@@ -61,55 +45,112 @@ passport.deserializeUser(async (id, done) => {
   }
 });
 
+// Konfigurasi Sequelize dan koneksi database
+const sequelize = new Sequelize('nodeabsen', 'root', '', {
+  dialect: 'mysql',
+  host: 'localhost',
+});
+
+const User = sequelize.define('User', {
+  username: {
+    type: DataTypes.STRING,
+    allowNull: false,
+    unique: true,
+  },
+  password: {
+    type: DataTypes.STRING,
+    allowNull: false,
+  },
+});
+
+// Sinkronisasi model dengan database
+sequelize.sync({ force: true })
+  .then(() => {
+    console.log('Database and tables created!');
+  })
+  .catch((error) => {
+    console.error('Error creating database and tables:', error);
+  });
+
+// Middleware
+app.use(express.urlencoded({ extended: false }));
+app.use(session({
+  secret: 'secret',
+  resave: false,
+  saveUninitialized: false,
+}));
+app.use(flash());
+app.use(passport.initialize());
+app.use(passport.session());
+
 // Routes
+app.get('/', (req, res) => {
+  res.send('<h1>Welcome to SIPKU</h1>');
+});
+
 app.get('/login', (req, res) => {
   res.send(`
     <h1>Login</h1>
+    ${req.flash('error')}
     <form method="post" action="/login">
       <input type="text" name="username" placeholder="Username" required /><br />
       <input type="password" name="password" placeholder="Password" required /><br />
       <button type="submit">Login</button>
     </form>
+    <p>Don't have an account? <a href="/signup">Sign Up</a></p>
   `);
 });
 
-app.post('/login', passport.authenticate('local', {
-  successRedirect: '/profile',
-  failureRedirect: '/login',
-  failureFlash: true
-}), async (req, res) => {
+app.post(
+  '/login',
+  passport.authenticate('local', {
+    successRedirect: '/dashboard',
+    failureRedirect: '/login',
+    failureFlash: true,
+  })
+);
+
+app.get('/signup', (req, res) => {
+  res.send(`
+    <h1>Sign Up</h1>
+    ${req.flash('error')}
+    <form method="post" action="/signup">
+      <input type="text" name="username" placeholder="Username" required /><br />
+      <input type="password" name="password" placeholder="Password" required /><br />
+      <button type="submit">Sign Up</button>
+    </form>
+    <p>Already have an account? <a href="/login">Login</a></p>
+  `);
+});
+
+app.post('/signup', async (req, res) => {
   try {
     const { username, password } = req.body;
     const existingUser = await User.findOne({ where: { username } });
 
     if (existingUser) {
       req.flash('error', 'Username already exists.');
-      return res.redirect('/login');
+      return res.redirect('/signup');
     }
 
-    await User.create({ username, password });
-    res.redirect('/profile');
+    const hashedPassword = await bcrypt.hash(password, 10);
+    await User.create({ username, password: hashedPassword });
+    res.redirect('/login');
   } catch (error) {
     console.error(error);
-    res.redirect('/login');
+    res.redirect('/signup');
   }
 });
 
-app.get('/profile', (req, res) => {
+app.get('/dashboard', (req, res) => {
   if (req.isAuthenticated()) {
-    res.send('Profile page');
+    res.send(`<h1>Welcome, ${req.user.username}!</h1>`);
   } else {
     res.redirect('/login');
   }
 });
 
-app.get('/', (req, res) => {
-  res.send('Home page');
-});
-
-// Sinkronisasi model dengan database
-sequelize.sync().then(() => {
-  app.listen(3000, () => {
-    console.log('Server berjalan pada http://localhost:3000');
-  });
+// Jalankan server
+app.listen(3000, () => {
+  console.log('Server running on http://localhost:3000');
 });
